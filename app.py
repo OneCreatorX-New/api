@@ -1,86 +1,59 @@
-addEventListener('fetch', e => e.respondWith(handleRequest(e.request)))
+from flask import Flask, request, jsonify
+import os
+import secrets
+import time
+from collections import defaultdict
+import base64
 
-async function handleRequest(request) {
-  try {
-    const ua = request.headers.get('User-Agent');
-    if (!ua || !ua.includes('Roblox')) throw new Error('Invalid User-Agent');
+app = Flask(__name__)
+temp_storage = {}
+request_counts = defaultdict(list)
 
-    const url = new URL(request.url);
-    const t = parseInt(url.searchParams.get('t'), 10);
-    const ct = Math.floor(Date.now() / 1000);
+def clean_old_entries():
+    current_time = time.time()
+    for token in list(temp_storage.keys()):
+        if current_time - temp_storage[token]['timestamp'] > 60:  # 60 segundos = 1 minuto
+            del temp_storage[token]
+
+def is_rate_limited(ip):
+    current_time = time.time()
+    request_counts[ip] = [t for t in request_counts[ip] if current_time - t < 60]
+    if len(request_counts[ip]) >= 3:
+        return True
+    request_counts[ip].append(current_time)
+    return False
+
+@app.route('/create', methods=['POST'])
+def create_url():
+    client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
     
-    if (isNaN(t) || ct - t > 3) throw new Error('Invalid timestamp');
+    if is_rate_limited(client_ip):
+        return jsonify({'error': 'Rate limit exceeded'}), 429
 
-    const sl = url.searchParams.get('sl');
-    if (!sl || !sl.match(/^[a-zA-Z0-9-_,]+$/)) throw new Error('Invalid slug');
+    clean_old_entries()
 
-    const slugs = sl.split('-');
-    let fullContent = '';
+    encoded_text = request.json['text']
+    try:
+        # Decodificar el contenido Base64
+        decoded_text = base64.b64decode(encoded_text).decode('utf-8')
+    except Exception as e:
+        return jsonify({'error': 'Invalid Base64 encoding'}), 400
 
-    for (const slug of slugs) {
-      const content = await fetchPasteContent(slug);
-      fullContent += content.trim() + '\n'; // Add newline between contents
+    token = secrets.token_urlsafe(16)
+    temp_storage[token] = {
+        'text': decoded_text,
+        'timestamp': time.time()
     }
+    return jsonify({'url': f'/access/{token}'})
 
-    fullContent = fullContent.trim(); // Remove trailing newline
+@app.route('/access/<token>', methods=['GET'])
+def access_text(token):
+    clean_old_entries()
+    if token in temp_storage:
+        text = temp_storage.pop(token)['text']
+        return text, 200
+    return 'Not found or already accessed', 404
 
-    const newUrl = await createTemporaryUrl(fullContent);
-    
-    const script = `
-local success, result = pcall(function()
-  return game:HttpGet("${newUrl}")
-end)
-
-if success then
-  loadstring(result)()
-else
-  warn("Failed to load script:", result)
-end
-`;
-    
-    return new Response(script, {
-      headers: { 'Content-Type': 'application/lua' }
-    });
-  } catch (error) {
-    console.error('Error:', error.message);
-    return new Response('Acceso denegado', { status: 403 });
-  }
-}
-
-async function fetchPasteContent(slug) {
-  try {
-    const response = await fetch(`https://paste-drop.com/raw/${slug}`);
-    if (!response.ok) throw new Error(`Failed to fetch content for slug: ${slug}`);
-    const htmlContent = await response.text();
-    
-    const contentMatch = htmlContent.match(/<div class="content">([\s\S]*?)<\/div>/);
-    if (!contentMatch || !contentMatch[1]) throw new Error(`Invalid content format for slug: ${slug}`);
-    
-    return contentMatch[1];
-  } catch (error) {
-    console.error('Error fetching paste content:', error.message);
-    throw error;
-  }
-}
-
-async function createTemporaryUrl(content) {
-  const apiUrl = 'https://api-fhi1.onrender.com/create';
-  try {
-    const encodedContent = btoa(unescape(encodeURIComponent(content))); // Base64 encode the content
-    const response = await fetch(apiUrl, {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ text: encodedContent })
-    });
-
-    if (!response.ok) throw new Error('Failed to create temporary URL');
-
-    const data = await response.json();
-    if (!data.url) throw new Error('Invalid response from API');
-
-    return `https://api-fhi1.onrender.com${data.url}`;
-  } catch (error) {
-    console.error('Error creating temporary URL:', error.message);
-    throw error;
-  }
-}
+if __name__ == '__main__':
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
