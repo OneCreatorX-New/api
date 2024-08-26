@@ -3,6 +3,7 @@ import os
 import secrets
 import time
 from collections import defaultdict
+import base64
 
 app = Flask(__name__)
 temp_storage = {}
@@ -31,10 +32,16 @@ def create_url():
 
     clean_old_entries()
 
-    text = request.json['text']
+    encoded_text = request.json['text']
+    try:
+        # Decodificar el contenido Base64
+        decoded_text = base64.b64decode(encoded_text).decode('utf-8')
+    except Exception as e:
+        return jsonify({'error': 'Invalid Base64 encoding'}), 400
+
     token = secrets.token_urlsafe(16)
     temp_storage[token] = {
-        'text': text,
+        'text': decoded_text,
         'timestamp': time.time()
     }
     return jsonify({'url': f'/access/{token}'})
