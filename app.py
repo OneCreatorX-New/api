@@ -13,7 +13,7 @@ URL_PATTERNS = [
 ]
 
 async def capture_url(url):
-    browser = await launch(args=['--no-sandbox'])
+    browser = await launch(args=['--no-sandbox', '--disable-setuid-sandbox'])
     page = await browser.newPage()
     captured_urls = set()
 
